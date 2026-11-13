@@ -30,6 +30,9 @@ Thumbs.db
 
 /generated/prisma
 
+# User uploads
+uploads/
+
 # AI agent tool config
 .agents/
 .claude/
