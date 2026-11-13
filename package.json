@@ -17,25 +17,40 @@
   "scripts": {
     "dev": "tsx watch server.ts",
     "start": "tsx server.ts",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "vercel-build": "prisma generate",
+    "test": "tsx --test tests/*.test.ts",
+    "test:neon": "tsx scripts/verify-neon.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "engines": {
+    "node": "24.x"
   },
   "devDependencies": {
+    "@types/cookie-session": "^2.0.49",
     "@types/express": "^5.0.6",
-    "@types/express-session": "^1.19.0",
     "@types/multer": "^2.3.0",
     "@types/node": "^26.6.6",
     "@types/pg": "^8.23.1",
+    "@types/ws": "^8.18.2",
     "prisma": "^7.10.1",
     "tsx": "^4.23.15",
     "typescript": "^7.0.2"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1168.0",
+    "@aws-sdk/s3-presigned-post": "^3.1168.0",
+    "@aws-sdk/s3-request-presigner": "^3.1168.0",
+    "@neon/config": "^1.14.0",
+    "@neondatabase/serverless": "^1.2.0",
+    "@prisma/adapter-neon": "^7.10.1",
     "@prisma/adapter-pg": "^7.10.1",
     "@prisma/client": "^7.10.1",
+    "cookie-session": "^2.1.1",
     "dotenv": "^18.0.10",
     "express": "^5.3.0",
-    "express-session": "^1.19.0",
+    "files-sdk": "^3.1.3",
     "multer": "^2.5.0",
-    "pg": "^8.23.1"
+    "pg": "^8.23.1",
+    "ws": "^8.23.0"
   }
 }

@@ -1,0 +1,10 @@
+.git/
+.env
+.env.*
+.neon
+.agents/
+.claude/
+.windsurf/
+uploads/
+tests/
+scripts/

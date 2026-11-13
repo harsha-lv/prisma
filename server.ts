@@ -1,55 +1,32 @@
 import "dotenv/config";
 import path from "node:path";
-import fs from "node:fs";
 import crypto from "node:crypto";
 import express, { type Request, type Response, type NextFunction } from "express";
-import session from "express-session";
+import cookieSession from "cookie-session";
 import multer from "multer";
-import { prisma } from "./lib/prisma";
+import { Files } from "files-sdk";
+import { neon } from "files-sdk/neon";
+import { prisma, warmupDb } from "./lib/prisma";
+import { upload, validateFile, ACCEPTED_FILES } from "./lib/upload-validation";
 
 const app = express();
 const PORT = Number(process.env.PORT ?? 3000);
-const UPLOAD_DIR = path.join(process.cwd(), "uploads");
-const MAX_FILE_SIZE = 5 * 1024 * 1024; // 5 MB
+const BUCKET = "uploads";
+const SESSION_AGE = 24 * 60 * 60 * 1000;
+const sessionSecret = process.env.SESSION_SECRET;
+if (process.env.VERCEL && !sessionSecret) throw new Error("SESSION_SECRET is required on Vercel");
 
-// Ensure the upload directory exists
-fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+// Neon Object Storage (S3-compatible, branches with the database).
+// Endpoint, region, and credentials come from the injected AWS_* env vars.
+const files = new Files({ adapter: neon({ bucket: BUCKET }) });
 
 // ---------------------------------------------------------------------------
-// Multer configuration
+// Multer configuration — hold the file in memory, then push it to the bucket
 // ---------------------------------------------------------------------------
-const storage = multer.diskStorage({
-  destination: (_req, _file, cb) => cb(null, UPLOAD_DIR),
-  // Prefix the stored name with random bytes so user files never collide
-  filename: (_req, file, cb) => {
-    const unique = `${Date.now()}-${crypto.randomBytes(8).toString("hex")}`;
-    cb(null, `${unique}${path.extname(file.originalname)}`);
-  },
-});
-
-const upload = multer({
-  storage,
-  limits: { fileSize: MAX_FILE_SIZE },
-  fileFilter: (_req, file, cb) => {
-    // Accept everything except executables/scripts as a sensible default
-    const blocked = [".exe", ".bat", ".cmd", ".sh", ".js", ".mjs", ".php"];
-    const ext = path.extname(file.originalname).toLowerCase();
-    if (blocked.includes(ext)) {
-      return cb(new Error(`File type ${ext} is not allowed`));
-    }
-    cb(null, true);
-  },
-});
 
 // ---------------------------------------------------------------------------
 // Session-based authentication (demo-grade: log in by email, no password)
 // ---------------------------------------------------------------------------
-declare module "express-session" {
-  interface SessionData {
-    userId?: number;
-  }
-}
-
 declare global {
   // eslint-disable-next-line @typescript-eslint/no-namespace
   namespace Express {
@@ -69,26 +46,30 @@ declare global {
   }
 }
 
-app.use(
-  session({
-    secret: process.env.SESSION_SECRET ?? "dev-only-insecure-secret",
-    resave: false,
-    saveUninitialized: false,
-    cookie: { httpOnly: true, sameSite: "lax", maxAge: 24 * 60 * 60 * 1000 },
-  }),
-);
+if (process.env.VERCEL) app.set("trust proxy", 1);
+app.use(cookieSession({
+  name: "session",
+  keys: [sessionSecret ?? "dev-only-insecure-secret"],
+  httpOnly: true,
+  sameSite: "lax",
+  secure: Boolean(process.env.VERCEL),
+  maxAge: SESSION_AGE,
+}));
 
 app.use(express.urlencoded({ extended: false }));
 
 // Attach the logged-in user (if any) to res.locals for every request
 app.use(async (req, res, next) => {
-  if (req.session.userId) {
+  if (req.session?.userId && (!Number.isFinite(req.session.expiresAt) || req.session.expiresAt <= Date.now())) {
+    req.session = null;
+  }
+  if (req.session?.userId) {
     const user = await prisma.user.findUnique({
       where: { id: req.session.userId },
       select: { id: true, email: true, name: true },
     });
     if (user) res.locals.user = user;
-    else req.session.destroy(() => {});
+    else req.session = null;
   }
   next();
 });
@@ -131,34 +112,51 @@ const renderUploads = (uploads: { id: number; filename: string; size: number; mi
 
 const uploadForm = (action: string) => `
 <form method="post" action="${action}" enctype="multipart/form-data">
-  <input type="file" name="file" required />
+  <p>PDF, PNG, JPEG, or TXT. Maximum 4 MB; one non-empty file per upload.</p>
+  <input type="file" name="file" accept="${ACCEPTED_FILES}" required />
   <button type="submit">Upload</button>
 </form>`;
 
-// Shared multer handler for both root and folder uploads
+// Shared handler: push the file bytes to the bucket, then persist the metadata
 async function handleUpload(req: Request, res: Response, folderId: number | null, backUrl: string) {
+  const user = res.locals.user!;
   if (!req.file) return res.redirect(`${backUrl}?error=No%20file%20provided`);
+  let mimeType: string;
+  try {
+    mimeType = validateFile(req.file);
+  } catch (error) {
+    return res.redirect(`${backUrl}?error=${encodeURIComponent((error as Error).message)}`);
+  }
 
-  await prisma.upload.create({
+  // Bucket key: uploads/<userId>/<unique><ext> — never collides, groups by user
+  const key = `uploads/${user.id}/${Date.now()}-${crypto.randomBytes(8).toString("hex")}${path.extname(req.file.originalname)}`;
+  await files.upload(key, req.file.buffer, { contentType: mimeType });
+
+  try {
+    await prisma.upload.create({
     data: {
       filename: req.file.originalname,
-      storedName: req.file.filename,
-      mimeType: req.file.mimetype,
+      storedName: key,
+      mimeType,
       size: req.file.size,
-      userId: res.locals.user!.id,
+      userId: user.id,
       folderId,
     },
-  });
+    });
+  } catch (error) {
+    // Database and object storage do not share a transaction.
+    // Compensate a failed metadata insert rather than leaving an orphan object.
+    await files.delete(key).catch(() => console.error("Could not clean up uploaded object"));
+    throw error;
+  }
   res.redirect(`${backUrl}?uploaded=1`);
 }
 
 function multerErrorRedirect(err: unknown, req: Request, res: Response, backUrl: string) {
   const message =
     err instanceof multer.MulterError && err.code === "LIMIT_FILE_SIZE"
-      ? "File exceeds the 5 MB limit"
+      ? "File exceeds the 4 MB limit"
       : (err as Error).message;
-  // Multer may have written a partial file before the error — clean it up
-  if (req.file?.path) fs.rm(req.file.path, () => {});
   return res.redirect(`${backUrl}?error=${encodeURIComponent(message)}`);
 }
 
@@ -224,12 +222,13 @@ app.post("/login", async (req, res) => {
     update: {},
     create: { email },
   });
-  req.session.userId = user.id;
+  req.session = { userId: user.id, expiresAt: Date.now() + SESSION_AGE };
   res.redirect("/");
 });
 
 app.post("/logout", (req, res) => {
-  req.session.destroy(() => res.redirect("/login"));
+  req.session = null;
+  res.redirect("/login");
 });
 
 // Home: folders, root files, create-folder and root upload forms
@@ -353,19 +352,19 @@ app.post("/folders/:id/delete", requireAuth, requireFolder, async (_req, res) =>
 
 // --- Uploads ----------------------------------------------------------------
 // Root upload
-app.post("/upload", requireAuth, (req, res) => {
+app.post("/upload", requireAuth, (req, res, next) => {
   upload.single("file")(req, res, (err) => {
     if (err) return multerErrorRedirect(err, req, res, "/");
-    void handleUpload(req, res, null, "/");
+    void handleUpload(req, res, null, "/").catch(next);
   });
 });
 
 // Upload into a folder
-app.post("/folders/:id/upload", requireAuth, requireFolder, (req, res) => {
+app.post("/folders/:id/upload", requireAuth, requireFolder, (req, res, next) => {
   upload.single("file")(req, res, (err) => {
     const backUrl = `/folders/${res.locals.folder!.id}`;
     if (err) return multerErrorRedirect(err, req, res, backUrl);
-    void handleUpload(req, res, res.locals.folder!.id, backUrl);
+    void handleUpload(req, res, res.locals.folder!.id, backUrl).catch(next);
   });
 });
 
@@ -411,18 +410,38 @@ app.get("/files/:id", requireAuth, requireFile, (req, res) => {
   );
 });
 
-// Download: stream the stored file back with its original name
-app.get("/files/:id/download", requireAuth, requireFile, (req, res) => {
+// Download: pull the object from the bucket and stream it with its original name
+app.get("/files/:id/download", requireAuth, requireFile, async (req, res) => {
   const file = res.locals.file!;
-  const storedPath = path.join(UPLOAD_DIR, file.storedName);
-  res.download(storedPath, file.filename, (err) => {
-    if (err && !res.headersSent) res.status(404).send("File no longer exists on disk");
-  });
+  try {
+    const object = await files.download(file.storedName);
+    const bytes = Buffer.from(await object.arrayBuffer());
+    res.attachment(file.filename);
+    res.setHeader("Content-Type", file.mimeType);
+    res.setHeader("Content-Length", String(bytes.byteLength));
+    res.send(bytes);
+  } catch {
+    res.status(404).send("File no longer exists in storage");
+  }
 });
 
 // 404 catch-all
 app.use((_req, res) => res.status(404).send("Not found"));
 
-app.listen(PORT, () => {
-  console.log(`Server listening on http://localhost:${PORT}`);
-});
+async function start() {
+  // Hold startup until a pool connection is established
+  await warmupDb();
+  app.listen(PORT, () => {
+    console.log(`Server listening on http://localhost:${PORT}`);
+  });
+}
+
+export default app;
+
+if (!process.env.VERCEL) {
+  void start().catch(() => {
+    console.error("Server startup failed: could not connect to Neon");
+    process.exitCode = 1;
+    void prisma.$disconnect();
+  });
+}
