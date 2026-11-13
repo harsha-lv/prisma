@@ -1,0 +1,33 @@
+{
+  "name": "prisma",
+  "version": "1.0.0",
+  "description": "",
+  "homepage": "https://github.com/harsha-lv/prisma#readme",
+  "bugs": {
+    "url": "https://github.com/harsha-lv/prisma/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/harsha-lv/prisma.git"
+  },
+  "license": "ISC",
+  "author": "",
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "@types/pg": "^8.23.1",
+    "prisma": "^7.10.1",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2"
+  },
+  "dependencies": {
+    "@prisma/adapter-pg": "^7.10.1",
+    "@prisma/client": "^7.10.1",
+    "dotenv": "^18.0.10",
+    "pg": "^8.23.1"
+  }
+}
