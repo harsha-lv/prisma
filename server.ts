@@ -56,6 +56,15 @@ declare global {
     interface Locals {
       user?: { id: number; email: string; name: string | null };
       folder?: { id: number; name: string };
+      file?: {
+        id: number;
+        filename: string;
+        storedName: string;
+        mimeType: string;
+        size: number;
+        uploadedAt: Date;
+        folder: { id: number; name: string } | null;
+      };
     }
   }
 }
@@ -116,7 +125,7 @@ const renderUploads = (uploads: { id: number; filename: string; size: number; mi
     : `<ul>${uploads
         .map(
           (u) =>
-            `<li>${escapeHtml(u.filename)} <small>(${(u.size / 1024).toFixed(1)} KB, ${escapeHtml(u.mimeType)})</small></li>`,
+            `<li><a href="/files/${u.id}">${escapeHtml(u.filename)}</a> <small>(${(u.size / 1024).toFixed(1)} KB, ${escapeHtml(u.mimeType)})</small></li>`,
         )
         .join("")}</ul>`;
 
@@ -173,6 +182,9 @@ const layout = (title: string, body: string) => `
     .error { color: #b00; }
     .success { color: #080; }
     ul { padding-left: 1.2rem; }
+    table { border-collapse: collapse; }
+    th, td { text-align: left; padding: .4rem .8rem; border-bottom: 1px solid #eee; }
+    th { font-weight: 600; }
     .flash { margin: 0; }
   </style>
 </head>
@@ -354,6 +366,57 @@ app.post("/folders/:id/upload", requireAuth, requireFolder, (req, res) => {
     const backUrl = `/folders/${res.locals.folder!.id}`;
     if (err) return multerErrorRedirect(err, req, res, backUrl);
     void handleUpload(req, res, res.locals.folder!.id, backUrl);
+  });
+});
+
+// --- File detail & download -------------------------------------------------
+// Load :id, verify the file belongs to the signed-in user
+async function requireFile(req: Request, res: Response, next: NextFunction) {
+  const fileId = Number(req.params.id);
+  if (!Number.isInteger(fileId)) return res.status(404).send("Not found");
+
+  const file = await prisma.upload.findFirst({
+    where: { id: fileId, userId: res.locals.user!.id },
+    include: { folder: { select: { id: true, name: true } } },
+  });
+  if (!file) return res.status(404).send("Not found");
+
+  res.locals.file = file;
+  next();
+}
+
+// Read: file detail page
+app.get("/files/:id", requireAuth, requireFile, (req, res) => {
+  const file = res.locals.file!;
+  const uploadedAt = new Date(file.uploadedAt).toLocaleString("en-US", {
+    dateStyle: "medium",
+    timeStyle: "short",
+  });
+
+  res.send(
+    layout(escapeHtml(file.filename), `
+    ${userBar(res.locals.user!)}
+    <p><a href="/">&larr; All files</a>${file.folder ? ` &middot; <a href="/folders/${file.folder.id}">&larr; ${escapeHtml(file.folder.name)}</a>` : ""}</p>
+    <h1>File details</h1>
+    <table>
+      <tr><th>Name</th><td>${escapeHtml(file.filename)}</td></tr>
+      <tr><th>Size</th><td>${(file.size / 1024).toFixed(1)} KB (${file.size} bytes)</td></tr>
+      <tr><th>Type</th><td>${escapeHtml(file.mimeType)}</td></tr>
+      <tr><th>Uploaded</th><td>${escapeHtml(uploadedAt)}</td></tr>
+      <tr><th>Folder</th><td>${file.folder ? escapeHtml(file.folder.name) : "Root"}</td></tr>
+    </table>
+    <p>
+      <a href="/files/${file.id}/download"><button type="button">Download</button></a>
+    </p>`),
+  );
+});
+
+// Download: stream the stored file back with its original name
+app.get("/files/:id/download", requireAuth, requireFile, (req, res) => {
+  const file = res.locals.file!;
+  const storedPath = path.join(UPLOAD_DIR, file.storedName);
+  res.download(storedPath, file.filename, (err) => {
+    if (err && !res.headersSent) res.status(404).send("File no longer exists on disk");
   });
 });
 
