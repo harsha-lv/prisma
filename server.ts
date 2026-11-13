@@ -6,8 +6,8 @@ import cookieSession from "cookie-session";
 import multer from "multer";
 import { Files } from "files-sdk";
 import { neon } from "files-sdk/neon";
-import { prisma, warmupDb } from "./lib/prisma";
-import { upload, validateFile, ACCEPTED_FILES } from "./lib/upload-validation";
+import { prisma, warmupDb } from "./lib/prisma.js";
+import { upload, validateFile, ACCEPTED_FILES } from "./lib/upload-validation.js";
 
 const app = express();
 const PORT = Number(process.env.PORT ?? 3000);

@@ -1,7 +1,7 @@
 import "dotenv/config";
 import { neonConfig } from "@neondatabase/serverless";
 import { PrismaNeon } from "@prisma/adapter-neon";
-import { PrismaClient } from "../generated/prisma/client";
+import { PrismaClient } from "../generated/prisma/client.js";
 import { WebSocket } from "ws";
 
 // Run Prisma over the Neon serverless driver using persistent WebSockets
