@@ -27,3 +27,11 @@ Thumbs.db
 .idea/
 .vscode/
 *.swp
+
+/generated/prisma
+
+# AI agent tool config
+.agents/
+.claude/
+.windsurf/
+skills-lock.json
