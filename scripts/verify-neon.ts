@@ -7,6 +7,9 @@ import { neon } from "files-sdk/neon";
 import { prisma, warmupDb } from "../lib/prisma";
 
 const base = process.env.TEST_BASE_URL ?? "http://localhost:3000";
+const protectionHeaders: Record<string, string> = process.env.TEST_PROTECTION_BYPASS
+  ? { "x-vercel-protection-bypass": process.env.TEST_PROTECTION_BYPASS }
+  : {};
 const storage = new Files({ adapter: neon({ bucket: "uploads" }) });
 const marker = `verify-${Date.now()}`;
 const body = Buffer.from(`Neon upload verification: ${marker}\n`);
@@ -16,6 +19,7 @@ let folderId: number | undefined;
 async function login(email: string) {
   const response = await fetch(`${base}/login`, {
     method: "POST",
+    headers: protectionHeaders,
     body: new URLSearchParams({ email }),
     redirect: "manual",
   });
@@ -31,7 +35,7 @@ async function main() {
   const otherCookie = await login("intruder@prisma.io");
   const user = await prisma.user.findUniqueOrThrow({ where: { email: "test@prisma.io" } });
   const request = (url: string, init: RequestInit = {}) =>
-    fetch(`${base}${url}`, { ...init, headers: { Cookie: cookie, ...init.headers }, redirect: "manual" });
+    fetch(`${base}${url}`, { ...init, headers: { ...protectionHeaders, Cookie: cookie, ...init.headers }, redirect: "manual" });
   try {
     const create = await request("/folders", {
       method: "POST", body: new URLSearchParams({ name: marker }),
@@ -69,10 +73,10 @@ async function main() {
       assert.deepEqual(Buffer.from(await download.arrayBuffer()), body);
       for (const suffix of ["", "/download"]) {
         const denied = await fetch(`${base}/files/${row.id}${suffix}`, {
-          headers: { Cookie: otherCookie }, redirect: "manual",
+          headers: { ...protectionHeaders, Cookie: otherCookie }, redirect: "manual",
         });
         assert.equal(denied.status, 404);
-        const anonymous = await fetch(`${base}/files/${row.id}${suffix}`, { redirect: "manual" });
+        const anonymous = await fetch(`${base}/files/${row.id}${suffix}`, { headers: protectionHeaders, redirect: "manual" });
         assert.equal(anonymous.headers.get("location"), "/login");
       }
       console.log(`${targetFolder ? "Folder" : "Root"}: upload → Neon metadata → bucket bytes → details → matching download; ownership OK`);
